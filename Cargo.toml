@@ -16,3 +16,5 @@ toml = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tabled = "0.17"

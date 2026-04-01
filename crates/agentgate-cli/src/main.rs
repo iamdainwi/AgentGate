@@ -1,14 +1,17 @@
 use agentgate_core::config::AgentGateConfig;
 use agentgate_core::proxy::stdio::StdioProxy;
+use agentgate_core::storage::{InvocationFilter, StorageReader};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tabled::{Table, Tabled};
 
 #[derive(Parser)]
-#[command(
-    name = "agentgate",
-    about = "AI Agent Security & Observability Gateway"
-)]
+#[command(name = "agentgate", about = "AI Agent Security & Observability Gateway")]
 struct Cli {
+    /// Path to the SQLite database [default: ~/.agentgate/logs.db]
+    #[arg(long, global = true)]
+    db: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -17,9 +20,23 @@ struct Cli {
 enum Commands {
     /// Wrap an MCP server process, proxying and logging all tool calls
     Wrap {
-        /// The command and arguments to run (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
+    },
+    /// Query and display logged tool invocations
+    Logs {
+        /// Filter by tool name
+        #[arg(long)]
+        tool: Option<String>,
+        /// Filter by status (allowed, denied, error, rate_limited)
+        #[arg(long)]
+        status: Option<String>,
+        /// Number of records to display [default: 50]
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Output as newline-delimited JSON instead of a table
+        #[arg(long)]
+        jsonl: bool,
     },
 }
 
@@ -29,6 +46,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    let mut config = AgentGateConfig::default();
+    if let Some(db) = cli.db {
+        config.db_path = db;
+    }
+
     match cli.command {
         Commands::Wrap { command } => {
             if command.is_empty() {
@@ -37,11 +59,71 @@ async fn main() -> Result<()> {
             }
 
             let (cmd, args) = command.split_first().expect("non-empty checked above");
-            let config = AgentGateConfig::default();
+            // Derive server_name from the binary name for legible records.
+            config.server_name = std::path::Path::new(cmd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(cmd)
+                .to_string();
+
             let proxy = StdioProxy::new(config);
             proxy.run(cmd, args).await?;
+        }
+
+        Commands::Logs { tool, status, limit, jsonl } => {
+            let reader = StorageReader::open(&config.db_path)?;
+            let filter = InvocationFilter { tool, status, limit };
+
+            if jsonl {
+                reader.export_jsonl(&filter, &mut std::io::stdout())?;
+            } else {
+                let records = reader.query(&filter)?;
+                if records.is_empty() {
+                    println!("No invocations found.");
+                    return Ok(());
+                }
+                print_table(&records);
+            }
         }
     }
 
     Ok(())
+}
+
+#[derive(Tabled)]
+struct InvocationRow {
+    #[tabled(rename = "Timestamp")]
+    timestamp: String,
+    #[tabled(rename = "Server")]
+    server_name: String,
+    #[tabled(rename = "Tool")]
+    tool_name: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Latency (ms)")]
+    latency_ms: String,
+    #[tabled(rename = "Policy Hit")]
+    policy_hit: String,
+}
+
+fn print_table(records: &[agentgate_core::storage::InvocationRecord]) {
+    let rows: Vec<InvocationRow> = records
+        .iter()
+        .map(|r| InvocationRow {
+            timestamp: r.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            server_name: r.server_name.clone(),
+            tool_name: r.tool_name.clone(),
+            status: r.status.as_str().to_string(),
+            latency_ms: r
+                .latency_ms
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            policy_hit: r
+                .policy_hit
+                .clone()
+                .unwrap_or_else(|| "-".to_string()),
+        })
+        .collect();
+
+    println!("{}", Table::new(rows));
 }
