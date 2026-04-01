@@ -18,3 +18,4 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tabled = "0.17"
+regex = "1"
