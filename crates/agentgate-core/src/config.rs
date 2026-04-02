@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,9 +14,11 @@ pub struct AgentGateConfig {
     pub rate_limits: RateLimitConfig,
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub servers: Vec<ServerEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     Pretty,
@@ -56,6 +59,34 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportKind {
+    Stdio,
+    Sse,
+    Http,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerEntry {
+    pub name: String,
+    pub transport: TransportKind,
+    /// Stdio transport: binary to spawn.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// SSE / HTTP transport: upstream base URL.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Extra request headers sent to the upstream (supports `${VAR}` expansion).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Local port to bind for SSE / HTTP transports.
+    #[serde(default)]
+    pub bind_port: Option<u16>,
+}
+
 impl Default for AgentGateConfig {
     fn default() -> Self {
         Self {
@@ -66,18 +97,28 @@ impl Default for AgentGateConfig {
             policy_path: None,
             rate_limits: RateLimitConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
+            servers: Vec::new(),
         }
     }
 }
 
 impl AgentGateConfig {
-    /// Load from a TOML file, falling back to defaults for missing fields.
     pub fn load_toml(path: &std::path::Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config: {}", path.display()))?;
         toml::from_str(&content)
             .with_context(|| format!("Invalid config TOML: {}", path.display()))
     }
+}
+
+/// Expand `${VAR}` placeholders with values from the environment.
+/// Un-resolvable variables are left as-is.
+pub fn expand_env_vars(s: &str) -> String {
+    let re = regex::Regex::new(r"\$\{([^}]+)\}").expect("static regex");
+    re.replace_all(s, |caps: &regex::Captures| {
+        std::env::var(&caps[1]).unwrap_or_else(|_| caps[0].to_string())
+    })
+    .into_owned()
 }
 
 pub fn agentgate_dir() -> PathBuf {

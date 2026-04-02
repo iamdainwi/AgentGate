@@ -19,3 +19,7 @@ anyhow = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tabled = "0.17"
 regex = "1"
+axum = "0.7"
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"], default-features = false }
+futures-util = "0.3"
+tokio-stream = "0.1"

@@ -22,3 +22,14 @@ chrono = { workspace = true }
 [[test]]
 name = "stdio_proxy_test"
 path = "../../tests/integration/stdio_proxy_test.rs"
+
+[[test]]
+name = "http_proxy_test"
+path = "../../tests/integration/http_proxy_test.rs"
+
+[dev-dependencies]
+toml = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }

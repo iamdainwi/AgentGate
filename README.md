@@ -132,7 +132,7 @@ agentgate/
 - [x] **Phase 1** — SQLite persistence, CLI log queries, JSONL export
 - [x] **Phase 2** — Declarative TOML policy engine (deny/allow/redact rules)
 - [x] **Phase 3** — Rate limiting & circuit breaker
-- [ ] **Phase 4** — SSE & HTTP transport support
+- [x] **Phase 4** — SSE & HTTP transport support
 - [ ] **Phase 5** — OpenTelemetry metrics export
 - [ ] **Phase 6** — Real-time dashboard (Next.js)
 - [ ] **Phase 7** — Distribution (Docker, Homebrew, installer)

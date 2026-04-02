@@ -11,3 +11,23 @@ per_agent_max_calls_per_minute = 200
 error_threshold  = 5
 window_seconds   = 30
 cooldown_seconds = 60
+
+[[servers]]
+name      = "filesystem"
+transport = "stdio"
+command   = "npx"
+args      = ["@modelcontextprotocol/server-filesystem", "/home"]
+
+[[servers]]
+name      = "github"
+transport = "sse"
+url       = "https://mcp.github.com/sse"
+bind_port = 7071
+
+[[servers]]
+name      = "internal-api"
+transport = "http"
+url       = "https://api.internal.company.com"
+bind_port = 7072
+[servers.headers]
+Authorization = "Bearer ${API_KEY}"
