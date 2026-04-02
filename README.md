@@ -24,8 +24,8 @@ AgentGate sits between AI coding agents (Claude Code, Cursor, Codex, Devin) and 
 AI agents run tool calls autonomously — reading files, executing shell commands, making API requests. Today there's no unified way to answer:
 
 - **"What did the agent actually do?"** — No audit trail across tool calls.
-- **"Can I restrict what the agent is allowed to do?"** — No policy layer between agents and tools. _(coming soon)_
-- **"Why did my API bill spike?"** — No rate limiting for agent-initiated calls. _(coming soon)_
+- **"Can I restrict what the agent is allowed to do?"** — No policy layer between agents and tools.
+- **"Why did my API bill spike?"** — No rate limiting for agent-initiated calls.
 
 AgentGate gives you full visibility into agent behavior with a single command.
 

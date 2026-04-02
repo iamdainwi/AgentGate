@@ -24,3 +24,4 @@ reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"], defau
 futures-util = "0.3"
 tokio-stream = "0.1"
 prometheus = { version = "0.13", default-features = false }
+tower-http = { version = "0.5", features = ["cors", "fs"] }

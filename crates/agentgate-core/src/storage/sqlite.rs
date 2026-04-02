@@ -4,6 +4,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, Sender};
 
 /// Payloads larger than this are truncated before storage to prevent database bloat.
@@ -77,16 +78,24 @@ pub struct InvocationRecord {
 /// rather than allowing unbounded memory growth under I/O backpressure.
 const STORAGE_CHANNEL_CAPACITY: usize = 10_000;
 
-/// Non-blocking writer that queues records to a background SQLite writer task.
+/// Broadcast capacity for the live event stream. Slow WebSocket receivers that fall
+/// behind by more than this many records will receive `RecvError::Lagged`.
+const LIVE_BROADCAST_CAPACITY: usize = 512;
+
+/// Non-blocking writer that queues records to a background SQLite writer task and
+/// broadcasts each persisted record to live WebSocket subscribers.
 #[derive(Clone)]
 pub struct StorageWriter {
     tx: Sender<InvocationRecord>,
+    live_tx: broadcast::Sender<InvocationRecord>,
 }
 
 impl StorageWriter {
     /// Spawns a background task that drains the channel and writes to SQLite.
     pub fn spawn(db_path: PathBuf) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel::<InvocationRecord>(STORAGE_CHANNEL_CAPACITY);
+        let (live_tx, _) = broadcast::channel::<InvocationRecord>(LIVE_BROADCAST_CAPACITY);
+        let live_tx_bg = live_tx.clone();
 
         tokio::task::spawn_blocking(move || {
             let conn = open_and_migrate(&db_path)?;
@@ -97,13 +106,15 @@ impl StorageWriter {
                     if let Err(e) = insert_record(&conn, &record) {
                         tracing::error!("SQLite insert failed: {e}");
                     }
+                    // Silently drop if no WebSocket subscribers are connected.
+                    let _ = live_tx_bg.send(record);
                 }
             });
 
             Ok::<_, anyhow::Error>(())
         });
 
-        Ok(Self { tx })
+        Ok(Self { tx, live_tx })
     }
 
     /// Enqueue a record for persistence. Drops the record (with a warning) if the
@@ -118,6 +129,12 @@ impl StorageWriter {
                 tracing::warn!("Storage writer channel closed; record dropped");
             }
         }
+    }
+
+    /// Subscribe to the live record stream. Each new persisted record is broadcast
+    /// to all active subscribers.
+    pub fn subscribe(&self) -> broadcast::Receiver<InvocationRecord> {
+        self.live_tx.subscribe()
     }
 }
 
