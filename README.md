@@ -16,7 +16,7 @@ AgentGate sits between AI coding agents (Claude Code, Cursor, Codex, Devin) and 
                │ logs.db  │
                └──────────┘
 ```
-
+![agent_gate.png](agent_gate.png)
 ## Why
 
 AI agents run tool calls autonomously — reading files, executing shell commands, making API requests. Today there's no unified way to answer:
@@ -180,3 +180,4 @@ MIT
 
 - [LinkedIn](https://www.linkedin.com/in/dainwi-choudhary/)
 - [Portfolio](https://dainwi.vercel.app)
+- [LICENSE](LICENSE)
