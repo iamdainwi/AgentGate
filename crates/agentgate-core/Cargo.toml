@@ -19,3 +19,4 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
+prometheus = { workspace = true }

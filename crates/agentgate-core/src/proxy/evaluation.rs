@@ -1,3 +1,4 @@
+use crate::metrics;
 use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::protocol::jsonrpc::{JsonRpcError, JsonRpcResponse};
 use crate::ratelimit::{CircuitBreaker, CircuitDecision, RateLimitDecision, RateLimiter};
@@ -30,6 +31,14 @@ pub fn evaluate_tool_call(
     if let Some(engine) = policy {
         match engine.evaluate(tool_name, arguments.as_ref()) {
             PolicyDecision::Deny { rule_id, message } => {
+                metrics::global()
+                    .policy_denials_total
+                    .with_label_values(&[&rule_id])
+                    .inc();
+                metrics::global()
+                    .tool_calls_total
+                    .with_label_values(&[tool_name, "denied"])
+                    .inc();
                 storage.record(make_record(
                     tool_name,
                     arguments,
@@ -47,6 +56,14 @@ pub fn evaluate_tool_call(
                      STOP retrying immediately — do NOT attempt this tool or any workarounds \
                      until the rate-limit window resets."
                 );
+                metrics::global()
+                    .rate_limit_hits_total
+                    .with_label_values(&["policy"])
+                    .inc();
+                metrics::global()
+                    .tool_calls_total
+                    .with_label_values(&[tool_name, "rate_limited"])
+                    .inc();
                 storage.record(make_record(
                     tool_name,
                     arguments,
@@ -58,10 +75,7 @@ pub fn evaluate_tool_call(
                     response: error_resp(req_id, -32029, &msg, None),
                 };
             }
-            PolicyDecision::Redact {
-                rule_id,
-                arguments: redacted,
-            } => {
+            PolicyDecision::Redact { rule_id, arguments: redacted } => {
                 tracing::info!(rule_id = %rule_id, tool = %tool_name, "Arguments redacted");
                 return EvalOutcome::Allow {
                     arguments: Some(redacted),
@@ -77,6 +91,14 @@ pub fn evaluate_tool_call(
                 "GLOBAL RATE LIMIT EXCEEDED. You MUST WAIT {retry_after_secs} SECONDS before \
                  making any tool call. Do NOT retry immediately or attempt alternative tools."
             );
+            metrics::global()
+                .rate_limit_hits_total
+                .with_label_values(&["global"])
+                .inc();
+            metrics::global()
+                .tool_calls_total
+                .with_label_values(&[tool_name, "rate_limited"])
+                .inc();
             storage.record(make_record(
                 tool_name,
                 arguments,
@@ -93,15 +115,20 @@ pub fn evaluate_tool_call(
                 ),
             };
         }
-        RateLimitDecision::ToolLimitExceeded {
-            tool,
-            retry_after_secs,
-        } => {
+        RateLimitDecision::ToolLimitExceeded { tool, retry_after_secs } => {
             let msg = format!(
                 "Rate limit exceeded for tool '{tool}'. \
                  WAIT {retry_after_secs} SECONDS before calling this tool again. \
                  Do NOT call this tool or attempt equivalent workarounds in the meantime."
             );
+            metrics::global()
+                .rate_limit_hits_total
+                .with_label_values(&["per-tool"])
+                .inc();
+            metrics::global()
+                .tool_calls_total
+                .with_label_values(&[tool_name, "rate_limited"])
+                .inc();
             storage.record(make_record(
                 tool_name,
                 arguments,
@@ -128,6 +155,14 @@ pub fn evaluate_tool_call(
                  WAIT {retry_after_secs} SECONDS before retrying. \
                  Do NOT call this tool repeatedly — it will not succeed until the cooldown expires."
             );
+            metrics::global()
+                .circuit_breaker_state
+                .with_label_values(&[tool_name])
+                .set(1.0);
+            metrics::global()
+                .tool_calls_total
+                .with_label_values(&[tool_name, "circuit_open"])
+                .inc();
             storage.record(make_record(
                 tool_name,
                 arguments,
@@ -147,6 +182,10 @@ pub fn evaluate_tool_call(
         CircuitDecision::Allow { is_probe } => {
             if is_probe {
                 tracing::info!(tool = %tool_name, "Circuit probe allowed");
+                metrics::global()
+                    .circuit_breaker_state
+                    .with_label_values(&[tool_name])
+                    .set(2.0); // half-open
             }
         }
     }

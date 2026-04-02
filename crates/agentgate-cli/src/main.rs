@@ -35,6 +35,9 @@ enum Commands {
         /// Path to a TOML policy file
         #[arg(long)]
         policy: Option<std::path::PathBuf>,
+        /// Expose Prometheus metrics on this port (e.g. 9090)
+        #[arg(long)]
+        metrics_port: Option<u16>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -81,7 +84,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Wrap { policy, command } => {
+        Commands::Wrap { policy, metrics_port, command } => {
             if command.is_empty() {
                 eprintln!("error: no command specified. Usage: agentgate wrap -- <cmd> [args...]");
                 std::process::exit(1);
@@ -94,6 +97,9 @@ async fn main() -> Result<()> {
                 .to_string();
             if policy.is_some() {
                 config.policy_path = policy;
+            }
+            if metrics_port.is_some() {
+                config.metrics_port = metrics_port;
             }
             StdioProxy::new(config).run(cmd, args).await?;
         }

@@ -1,6 +1,8 @@
-log_level   = "info"
-log_format  = "pretty"
-server_name = "my-mcp-server"
+log_level    = "info"
+log_format   = "pretty"
+server_name  = "my-mcp-server"
+# metrics_port = 9090   # expose Prometheus /metrics on this port (stdio transport only;
+#                       # SSE and HTTP transports expose /metrics on their own bind port)
 
 [rate_limits]
 global_max_calls_per_minute    = 500

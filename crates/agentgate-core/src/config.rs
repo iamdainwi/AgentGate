@@ -10,6 +10,11 @@ pub struct AgentGateConfig {
     pub db_path: PathBuf,
     pub server_name: String,
     pub policy_path: Option<PathBuf>,
+    /// When set, a Prometheus `/metrics` endpoint is exposed on this port.
+    /// Required for the stdio transport, which has no built-in HTTP server.
+    /// SSE and HTTP transports always expose `/metrics` on their own bind port.
+    #[serde(default)]
+    pub metrics_port: Option<u16>,
     #[serde(default)]
     pub rate_limits: RateLimitConfig,
     #[serde(default)]
@@ -95,6 +100,7 @@ impl Default for AgentGateConfig {
             db_path: agentgate_dir().join("logs.db"),
             server_name: "unknown".to_string(),
             policy_path: None,
+            metrics_port: None,
             rate_limits: RateLimitConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
             servers: Vec::new(),

@@ -1,4 +1,5 @@
 use crate::config::{expand_env_vars, ServerEntry};
+use crate::metrics;
 use crate::policy::PolicyEngine;
 use crate::protocol::jsonrpc::JsonRpcMessage;
 use crate::protocol::mcp;
@@ -100,6 +101,7 @@ impl SseProxy {
             .route("/sse", get(sse_handler))
             .route("/message", post(message_handler))
             .route("/health", get(health_handler))
+            .route("/metrics", get(metrics::metrics_handler))
             .with_state(self.state);
 
         axum::serve(listener, router)
@@ -212,6 +214,7 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
     if let Some(JsonRpcMessage::Request(ref req)) = msg {
         if req.method == mcp::TOOLS_CALL {
             let (tool_name, arguments) = extract_params(req);
+            let started_at = Instant::now();
 
             match evaluate_tool_call(
                 &req.id,
@@ -232,16 +235,50 @@ async fn try_message_handler(state: SseState, body: axum::body::Bytes) -> Result
                     )
                         .into_response());
                 }
-                EvalOutcome::Allow {
-                    arguments: allowed_args,
-                } => {
+                EvalOutcome::Allow { arguments: allowed_args } => {
+                    let endpoint = state.message_endpoint.read().await.clone();
+                    let mut req_builder = state
+                        .http_client
+                        .post(&endpoint)
+                        .header("Content-Type", "application/json")
+                        .body(body);
+                    for (k, v) in &state.extra_headers {
+                        req_builder = req_builder.header(k, v);
+                    }
+
+                    metrics::global().active_sessions.inc();
+                    let upstream_resp = req_builder
+                        .send()
+                        .await
+                        .context("Failed to forward to upstream message endpoint")?;
+                    let elapsed = started_at.elapsed();
+                    let is_error = !upstream_resp.status().is_success();
+                    let status_label = if is_error { "error" } else { "success" };
+
+                    let m = metrics::global();
+                    m.tool_calls_total.with_label_values(&[&tool_name, status_label]).inc();
+                    m.tool_call_duration_seconds
+                        .with_label_values(&[&tool_name])
+                        .observe(elapsed.as_secs_f64());
+                    m.circuit_breaker_state
+                        .with_label_values(&[&tool_name])
+                        .set(metrics::circuit_state_to_f64(
+                            state.circuit_breaker.state_kind(&tool_name),
+                        ));
+                    m.active_sessions.dec();
+
                     state.storage.record(make_record(
                         &tool_name,
                         allowed_args,
                         &state.server_name,
-                        InvocationStatus::Allowed,
+                        if is_error { InvocationStatus::Error } else { InvocationStatus::Allowed },
                         None,
                     ));
+
+                    let http_status = axum::http::StatusCode::from_u16(upstream_resp.status().as_u16())
+                        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                    let resp_body = upstream_resp.bytes().await.context("Failed to read upstream response")?;
+                    return Ok((http_status, resp_body).into_response());
                 }
             }
         }

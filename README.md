@@ -16,7 +16,9 @@ AgentGate sits between AI coding agents (Claude Code, Cursor, Codex, Devin) and 
                │ logs.db  │
                └──────────┘
 ```
+
 ![agent_gate.png](agent_gate.png)
+
 ## Why
 
 AI agents run tool calls autonomously — reading files, executing shell commands, making API requests. Today there's no unified way to answer:
@@ -133,7 +135,7 @@ agentgate/
 - [x] **Phase 2** — Declarative TOML policy engine (deny/allow/redact rules)
 - [x] **Phase 3** — Rate limiting & circuit breaker
 - [x] **Phase 4** — SSE & HTTP transport support
-- [ ] **Phase 5** — OpenTelemetry metrics export
+- [x] **Phase 5** — OpenTelemetry metrics export
 - [ ] **Phase 6** — Real-time dashboard (Next.js)
 - [ ] **Phase 7** — Distribution (Docker, Homebrew, installer)
 

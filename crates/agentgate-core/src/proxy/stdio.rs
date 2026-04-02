@@ -1,5 +1,6 @@
 use crate::config::AgentGateConfig;
 use crate::logging::structured::{log_event, Direction, LogEvent};
+use crate::metrics;
 use crate::policy::PolicyEngine;
 use crate::protocol::jsonrpc::{JsonRpcMessage, JsonRpcRequest};
 use crate::protocol::mcp;
@@ -7,12 +8,15 @@ use crate::proxy::evaluation::{evaluate_tool_call, EvalOutcome};
 use crate::ratelimit::{CircuitBreaker, RateLimiter};
 use crate::storage::{InvocationRecord, InvocationStatus, StorageWriter};
 use anyhow::{Context, Result};
+use axum::Router;
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
@@ -53,6 +57,21 @@ impl StdioProxy {
         let rate_limiter = Arc::new(RateLimiter::new(self.config.rate_limits.clone()));
         let circuit_breaker = Arc::new(CircuitBreaker::new(self.config.circuit_breaker.clone()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+
+        if let Some(port) = self.config.metrics_port {
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+            let router = Router::new()
+                .route("/metrics", axum::routing::get(metrics::metrics_handler));
+            match TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    tracing::info!(addr = %addr, "Metrics server listening");
+                    tokio::spawn(async move {
+                        let _ = axum::serve(listener, router).await;
+                    });
+                }
+                Err(e) => tracing::warn!("Failed to bind metrics server on {addr}: {e}"),
+            }
+        }
 
         // FIX: Bounded channel (10_000 messages) to prevent memory leaks under high backpressure
         let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(10_000);
@@ -190,14 +209,13 @@ async fn proxy_inbound(
                             .map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
                         continue;
                     }
-                    EvalOutcome::Allow {
-                        arguments: allowed_args,
-                    } => {
+                    EvalOutcome::Allow { arguments: allowed_args } => {
                         let forward_line = if allowed_args != original_args {
                             serde_json::to_string(&rebuild_call(req, allowed_args.clone()))?
                         } else {
                             line.clone()
                         };
+                        metrics::global().active_sessions.inc();
                         pending.lock().unwrap().insert(
                             id_key(req),
                             PendingCall {
@@ -299,7 +317,8 @@ fn flush_pending(
         return;
     };
 
-    let latency_ms = call.started_at.elapsed().as_millis() as i64;
+    let elapsed = call.started_at.elapsed();
+    let latency_ms = elapsed.as_millis() as i64;
 
     if resp.error.is_some() {
         circuit_breaker.on_error(&call.tool_name);
@@ -312,6 +331,23 @@ fn flush_pending(
     } else {
         InvocationStatus::Allowed
     };
+
+    let status_label = match status {
+        InvocationStatus::Error => "error",
+        InvocationStatus::Allowed => "success",
+        _ => "unknown",
+    };
+    let m = metrics::global();
+    m.tool_calls_total.with_label_values(&[&call.tool_name, status_label]).inc();
+    m.tool_call_duration_seconds
+        .with_label_values(&[&call.tool_name])
+        .observe(elapsed.as_secs_f64());
+    m.circuit_breaker_state
+        .with_label_values(&[&call.tool_name])
+        .set(metrics::circuit_state_to_f64(
+            circuit_breaker.state_kind(&call.tool_name),
+        ));
+    m.active_sessions.dec();
 
     // Scan result through policy redact rules before storing — catches secrets in tool output.
     let result_to_store = resp.result.as_ref().map(|res| match policy {

@@ -1,4 +1,5 @@
 use crate::config::{expand_env_vars, ServerEntry};
+use crate::metrics;
 use crate::policy::PolicyEngine;
 use crate::protocol::jsonrpc::JsonRpcMessage;
 use crate::protocol::mcp;
@@ -87,6 +88,7 @@ impl HttpProxy {
 
         let router = Router::new()
             .route("/health", axum::routing::get(health_handler))
+            .route("/metrics", axum::routing::get(metrics::metrics_handler))
             .fallback(any(proxy_handler))
             .with_state(self.state);
 
@@ -152,14 +154,27 @@ async fn try_proxy(state: HttpState, req: Request) -> Result<Response> {
                             )
                                 .into_response());
                         }
-                        EvalOutcome::Allow {
-                            arguments: allowed_args,
-                        } => {
+                        EvalOutcome::Allow { arguments: allowed_args } => {
+                            metrics::global().active_sessions.inc();
                             let upstream_resp =
                                 forward(&state, &method, &path, &in_headers, body_bytes.clone())
                                     .await?;
-                            let latency_ms = started_at.elapsed().as_millis() as i64;
+                            let elapsed = started_at.elapsed();
+                            let latency_ms = elapsed.as_millis() as i64;
                             let is_error = !upstream_resp.status().is_success();
+                            let status_label = if is_error { "error" } else { "success" };
+
+                            let m = metrics::global();
+                            m.tool_calls_total.with_label_values(&[&tool_name, status_label]).inc();
+                            m.tool_call_duration_seconds
+                                .with_label_values(&[&tool_name])
+                                .observe(elapsed.as_secs_f64());
+                            m.circuit_breaker_state
+                                .with_label_values(&[&tool_name])
+                                .set(metrics::circuit_state_to_f64(
+                                    state.circuit_breaker.state_kind(&tool_name),
+                                ));
+                            m.active_sessions.dec();
 
                             state.storage.record(InvocationRecord {
                                 id: Uuid::new_v4().to_string(),
