@@ -82,7 +82,7 @@ impl StdioProxy {
         let task_a = tokio::spawn(proxy_inbound(
             child_stdin,
             Arc::clone(&pending),
-            policy,
+            policy.clone(),
             Arc::clone(&rate_limiter),
             Arc::clone(&circuit_breaker),
             storage.clone(),
@@ -93,6 +93,7 @@ impl StdioProxy {
         let task_b = tokio::spawn(proxy_response(
             child_stdout,
             Arc::clone(&pending),
+            policy.clone(),
             Arc::clone(&circuit_breaker),
             storage,
             self.config.server_name.clone(),
@@ -101,14 +102,18 @@ impl StdioProxy {
 
         let task_c = tokio::spawn(pipe_stderr(child_stderr));
 
-        // FIX: Prevent Zombie Process by catching OS interrupt and killing the child properly
         let status = tokio::select! {
             res = child.wait() => {
                 res.context("Failed to wait for child process")?
             }
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received Ctrl+C, shutting down MCP server...");
-                child.kill().await.context("Failed to kill child process")?;
+                tracing::info!("Received Ctrl+C, terminating child");
+                let _ = child.kill().await;
+                std::process::exit(0);
+            }
+            _ = sigterm_signal() => {
+                tracing::info!("Received SIGTERM, terminating child");
+                let _ = child.kill().await;
                 std::process::exit(0);
             }
         };
@@ -217,6 +222,7 @@ async fn proxy_inbound(
 async fn proxy_response(
     child_stdout: tokio::process::ChildStdout,
     pending: PendingMap,
+    policy: Option<Arc<PolicyEngine>>,
     circuit_breaker: Arc<CircuitBreaker>,
     storage: StorageWriter,
     server_name: String,
@@ -237,12 +243,11 @@ async fn proxy_response(
                     message: msg.clone(),
                     raw: line.clone(),
                 });
-                flush_pending(&msg, &pending, &circuit_breaker, &storage, &server_name);
+                flush_pending(&msg, &pending, policy.as_ref(), &circuit_breaker, &storage, &server_name);
             }
             Err(e) => tracing::warn!("Response parse error: {e}"),
         }
 
-        // FIX: Await bounded channel sending
         stdout_tx
             .send(line)
             .await
@@ -273,6 +278,7 @@ async fn forward_raw(sink: &mut tokio::process::ChildStdin, line: &str) -> Resul
 fn flush_pending(
     msg: &JsonRpcMessage,
     pending: &PendingMap,
+    policy: Option<&Arc<PolicyEngine>>,
     circuit_breaker: &CircuitBreaker,
     storage: &StorageWriter,
     server_name: &str,
@@ -300,20 +306,13 @@ fn flush_pending(
         InvocationStatus::Allowed
     };
 
-    // FIX: Truncate massive JSON results to prevent SQLite database bloat
-    let result_to_store = if let Some(res) = &resp.result {
-        let res_str = serde_json::to_string(res).unwrap_or_default();
-        if res_str.len() > 2048 {
-            Some(Value::String(format!(
-                "{}... [truncated]",
-                &res_str[..2048]
-            )))
-        } else {
-            Some(res.clone())
+    // Scan result through policy redact rules before storing — catches secrets in tool output.
+    let result_to_store = resp.result.as_ref().map(|res| {
+        match policy {
+            Some(engine) => engine.redact_output(res),
+            None => res.clone(),
         }
-    } else {
-        None
-    };
+    });
 
     storage.record(InvocationRecord {
         id: Uuid::new_v4().to_string(),
@@ -364,4 +363,18 @@ fn extract_params(req: &JsonRpcRequest) -> (String, Option<Value>) {
         .to_string();
     let arguments = params.get("arguments").cloned();
     (tool_name, arguments)
+}
+
+/// Resolves when SIGTERM is received on Unix; never resolves on other platforms.
+async fn sigterm_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut sig) = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        ) {
+            sig.recv().await;
+            return;
+        }
+    }
+    std::future::pending::<()>().await
 }

@@ -139,6 +139,21 @@ impl PolicyEngine {
         PolicyDecision::Allow
     }
 
+    /// Apply all `redact` rules' patterns to a result value.
+    /// Call this on tool-call results before storing to prevent secrets from leaking into logs.
+    pub fn redact_output(&self, value: &Value) -> Value {
+        let rules = self.compiled.read().unwrap();
+        let mut out = value.clone();
+        for cr in rules.iter() {
+            if cr.rule.action == RuleAction::Redact {
+                if let (Some(re), Some(replacement)) = (&cr.redact_re, &cr.rule.replacement) {
+                    out = redact_value(&out, re, replacement);
+                }
+            }
+        }
+        out
+    }
+
     pub fn spawn_watcher(engine: Arc<Self>, path: PathBuf) {
         tokio::spawn(async move {
             let mut last_modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();

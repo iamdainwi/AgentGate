@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
+/// Payloads larger than this are truncated before storage to prevent database bloat.
+const MAX_PAYLOAD_BYTES: usize = 2048;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tool_invocations (
     id          TEXT PRIMARY KEY,
@@ -200,7 +203,22 @@ fn open_and_migrate(db_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+fn truncate_payload(s: String) -> String {
+    if s.len() <= MAX_PAYLOAD_BYTES {
+        return s;
+    }
+    // Find the last valid UTF-8 char boundary at or before the limit.
+    let mut boundary = MAX_PAYLOAD_BYTES;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    format!("{}...[truncated]", &s[..boundary])
+}
+
 fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
+    let arguments = r.arguments.as_ref().map(|v| truncate_payload(v.to_string()));
+    let result = r.result.as_ref().map(|v| truncate_payload(v.to_string()));
+
     conn.execute(
         "INSERT OR REPLACE INTO tool_invocations
          (id, timestamp, agent_id, session_id, server_name, tool_name,
@@ -213,8 +231,8 @@ fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
             r.session_id,
             r.server_name,
             r.tool_name,
-            r.arguments.as_ref().map(|v| v.to_string()),
-            r.result.as_ref().map(|v| v.to_string()),
+            arguments,
+            result,
             r.latency_ms,
             r.status.as_str(),
             r.policy_hit,

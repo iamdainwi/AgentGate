@@ -42,7 +42,11 @@ pub fn evaluate_tool_call(
                 };
             }
             PolicyDecision::RateLimited { rule_id } => {
-                let msg = format!("Rate limit exceeded (rule '{rule_id}')");
+                let msg = format!(
+                    "Tool call blocked by rate-limit policy rule '{rule_id}'. \
+                     STOP retrying immediately — do NOT attempt this tool or any workarounds \
+                     until the rate-limit window resets."
+                );
                 storage.record(make_record(
                     tool_name,
                     arguments,
@@ -69,7 +73,10 @@ pub fn evaluate_tool_call(
 
     match rate_limiter.check(tool_name) {
         RateLimitDecision::GlobalLimitExceeded { retry_after_secs } => {
-            let msg = format!("Global rate limit exceeded. Retry after {retry_after_secs}s.");
+            let msg = format!(
+                "GLOBAL RATE LIMIT EXCEEDED. You MUST WAIT {retry_after_secs} SECONDS before \
+                 making any tool call. Do NOT retry immediately or attempt alternative tools."
+            );
             storage.record(make_record(
                 tool_name,
                 arguments,
@@ -91,7 +98,9 @@ pub fn evaluate_tool_call(
             retry_after_secs,
         } => {
             let msg = format!(
-                "Per-tool rate limit exceeded for '{tool}'. Retry after {retry_after_secs}s."
+                "Rate limit exceeded for tool '{tool}'. \
+                 WAIT {retry_after_secs} SECONDS before calling this tool again. \
+                 Do NOT call this tool or attempt equivalent workarounds in the meantime."
             );
             storage.record(make_record(
                 tool_name,
@@ -114,8 +123,11 @@ pub fn evaluate_tool_call(
 
     match circuit_breaker.check(tool_name) {
         CircuitDecision::Open { retry_after_secs } => {
-            let msg =
-                format!("Circuit breaker open for '{tool_name}'. Retry after {retry_after_secs}s.");
+            let msg = format!(
+                "Circuit breaker OPEN for '{tool_name}' due to repeated failures. \
+                 WAIT {retry_after_secs} SECONDS before retrying. \
+                 Do NOT call this tool repeatedly — it will not succeed until the cooldown expires."
+            );
             storage.record(make_record(
                 tool_name,
                 arguments,
