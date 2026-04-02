@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 struct PendingCall {
@@ -54,7 +54,8 @@ impl StdioProxy {
         let circuit_breaker = Arc::new(CircuitBreaker::new(self.config.circuit_breaker.clone()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
-        let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // FIX: Bounded channel (10_000 messages) to prevent memory leaks under high backpressure
+        let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(10_000);
 
         let stdout_writer = tokio::spawn(async move {
             let mut out = tokio::io::stdout();
@@ -100,7 +101,17 @@ impl StdioProxy {
 
         let task_c = tokio::spawn(pipe_stderr(child_stderr));
 
-        let status = child.wait().await.context("Failed to wait for child")?;
+        // FIX: Prevent Zombie Process by catching OS interrupt and killing the child properly
+        let status = tokio::select! {
+            res = child.wait() => {
+                res.context("Failed to wait for child process")?
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl+C, shutting down MCP server...");
+                child.kill().await.context("Failed to kill child process")?;
+                std::process::exit(0);
+            }
+        };
 
         let flush = std::time::Duration::from_secs(2);
         let _ = tokio::time::timeout(flush, task_a).await;
@@ -125,7 +136,7 @@ async fn proxy_inbound(
     circuit_breaker: Arc<CircuitBreaker>,
     storage: StorageWriter,
     server_name: String,
-    stdout_tx: UnboundedSender<String>,
+    stdout_tx: Sender<String>,
 ) -> Result<()> {
     let mut reader = BufReader::new(tokio::io::stdin()).lines();
 
@@ -166,7 +177,9 @@ async fn proxy_inbound(
                     &server_name,
                 ) {
                     EvalOutcome::Block { response } => {
-                        stdout_tx.send(serde_json::to_string(&response)?)?;
+                        let res_str = serde_json::to_string(&response)?;
+                        // FIX: Await bounded channel sending
+                        stdout_tx.send(res_str).await.map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
                         continue;
                     }
                     EvalOutcome::Allow { arguments: allowed_args } => {
@@ -202,7 +215,7 @@ async fn proxy_response(
     circuit_breaker: Arc<CircuitBreaker>,
     storage: StorageWriter,
     server_name: String,
-    stdout_tx: UnboundedSender<String>,
+    stdout_tx: Sender<String>,
 ) -> Result<()> {
     let mut reader = BufReader::new(child_stdout).lines();
 
@@ -224,7 +237,8 @@ async fn proxy_response(
             Err(e) => tracing::warn!("Response parse error: {e}"),
         }
 
-        stdout_tx.send(line)?;
+        // FIX: Await bounded channel sending
+        stdout_tx.send(line).await.map_err(|e| anyhow::anyhow!("Channel error: {e}"))?;
     }
 
     Ok(())
@@ -278,6 +292,18 @@ fn flush_pending(
         InvocationStatus::Allowed
     };
 
+    // FIX: Truncate massive JSON results to prevent SQLite database bloat
+    let result_to_store = if let Some(res) = &resp.result {
+        let res_str = serde_json::to_string(res).unwrap_or_default();
+        if res_str.len() > 2048 {
+            Some(Value::String(format!("{}... [truncated]", &res_str[..2048])))
+        } else {
+            Some(res.clone())
+        }
+    } else {
+        None
+    };
+
     storage.record(InvocationRecord {
         id: Uuid::new_v4().to_string(),
         timestamp: Utc::now(),
@@ -286,7 +312,7 @@ fn flush_pending(
         server_name: server_name.to_string(),
         tool_name: call.tool_name,
         arguments: call.arguments,
-        result: resp.result.clone(),
+        result: result_to_store,
         latency_ms: Some(latency_ms),
         status,
         policy_hit: None,
