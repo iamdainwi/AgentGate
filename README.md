@@ -131,7 +131,7 @@ agentgate/
 - [x] **Phase 0** — MCP stdio proxy with structured logging
 - [x] **Phase 1** — SQLite persistence, CLI log queries, JSONL export
 - [x] **Phase 2** — Declarative TOML policy engine (deny/allow/redact rules)
-- [ ] **Phase 3** — Rate limiting & circuit breaker
+- [x] **Phase 3** — Rate limiting & circuit breaker
 - [ ] **Phase 4** — SSE & HTTP transport support
 - [ ] **Phase 5** — OpenTelemetry metrics export
 - [ ] **Phase 6** — Real-time dashboard (Next.js)

@@ -1,4 +1,4 @@
-use agentgate_core::config::AgentGateConfig;
+use agentgate_core::config::{agentgate_dir, AgentGateConfig};
 use agentgate_core::proxy::stdio::StdioProxy;
 use agentgate_core::storage::{InvocationFilter, StorageReader};
 use anyhow::Result;
@@ -8,7 +8,11 @@ use tabled::{Table, Tabled};
 #[derive(Parser)]
 #[command(name = "agentgate", about = "AI Agent Security & Observability Gateway")]
 struct Cli {
-    /// Path to the SQLite database [default: ~/.agentgate/logs.db]
+    /// Path to a config TOML file [default: ~/.agentgate/config.toml]
+    #[arg(long, global = true)]
+    config: Option<std::path::PathBuf>,
+
+    /// Override the database path
     #[arg(long, global = true)]
     db: Option<std::path::PathBuf>,
 
@@ -35,10 +39,10 @@ enum Commands {
         /// Filter by status (allowed, denied, error, rate_limited)
         #[arg(long)]
         status: Option<String>,
-        /// Number of records to display [default: 50]
+        /// Number of records to display
         #[arg(long, default_value = "50")]
         limit: usize,
-        /// Output as newline-delimited JSON instead of a table
+        /// Output as newline-delimited JSON
         #[arg(long)]
         jsonl: bool,
     },
@@ -50,7 +54,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let mut config = AgentGateConfig::default();
+    let mut config = load_config(cli.config.as_deref());
     if let Some(db) = cli.db {
         config.db_path = db;
     }
@@ -68,10 +72,12 @@ async fn main() -> Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or(cmd)
                 .to_string();
-            config.policy_path = policy;
 
-            let proxy = StdioProxy::new(config);
-            proxy.run(cmd, args).await?;
+            if policy.is_some() {
+                config.policy_path = policy;
+            }
+
+            StdioProxy::new(config).run(cmd, args).await?;
         }
 
         Commands::Logs { tool, status, limit, jsonl } => {
@@ -92,6 +98,26 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_config(explicit: Option<&std::path::Path>) -> AgentGateConfig {
+    let path = explicit
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| agentgate_dir().join("config.toml"));
+
+    if path.exists() {
+        match AgentGateConfig::load_toml(&path) {
+            Ok(c) => {
+                tracing::debug!("Loaded config from {}", path.display());
+                return c;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load config from {}: {e}", path.display());
+            }
+        }
+    }
+
+    AgentGateConfig::default()
 }
 
 #[derive(Tabled)]
@@ -122,10 +148,7 @@ fn print_table(records: &[agentgate_core::storage::InvocationRecord]) {
                 .latency_ms
                 .map(|l| l.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            policy_hit: r
-                .policy_hit
-                .clone()
-                .unwrap_or_else(|| "-".to_string()),
+            policy_hit: r.policy_hit.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 

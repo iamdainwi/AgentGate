@@ -1,0 +1,13 @@
+log_level   = "info"
+log_format  = "pretty"
+server_name = "my-mcp-server"
+
+[rate_limits]
+global_max_calls_per_minute    = 500
+per_tool_max_calls_per_minute  = 100
+per_agent_max_calls_per_minute = 200
+
+[circuit_breaker]
+error_threshold  = 5
+window_seconds   = 30
+cooldown_seconds = 60

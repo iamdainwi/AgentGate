@@ -3,10 +3,11 @@ use crate::logging::structured::{log_event, Direction, LogEvent};
 use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::protocol::jsonrpc::{JsonRpcError, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use crate::protocol::mcp;
+use crate::ratelimit::{CircuitBreaker, CircuitDecision, RateLimitDecision, RateLimiter};
 use crate::storage::{InvocationRecord, InvocationStatus, StorageWriter};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -37,7 +38,7 @@ impl StdioProxy {
 
         let storage = StorageWriter::spawn(self.config.db_path.clone())?;
 
-        let engine = self
+        let policy = self
             .config
             .policy_path
             .as_deref()
@@ -48,6 +49,8 @@ impl StdioProxy {
             })
             .transpose()?;
 
+        let rate_limiter = Arc::new(RateLimiter::new(self.config.rate_limits.clone()));
+        let circuit_breaker = Arc::new(CircuitBreaker::new(self.config.circuit_breaker.clone()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
         let (stdout_tx, mut stdout_rx) = mpsc::unbounded_channel::<String>();
@@ -77,7 +80,9 @@ impl StdioProxy {
         let task_a = tokio::spawn(proxy_inbound(
             child_stdin,
             Arc::clone(&pending),
-            engine,
+            policy,
+            Arc::clone(&rate_limiter),
+            Arc::clone(&circuit_breaker),
             storage.clone(),
             self.config.server_name.clone(),
             stdout_tx.clone(),
@@ -86,6 +91,7 @@ impl StdioProxy {
         let task_b = tokio::spawn(proxy_response(
             child_stdout,
             Arc::clone(&pending),
+            Arc::clone(&circuit_breaker),
             storage,
             self.config.server_name.clone(),
             stdout_tx,
@@ -95,11 +101,11 @@ impl StdioProxy {
 
         let status = child.wait().await.context("Failed to wait for child")?;
 
-        let timeout = std::time::Duration::from_secs(2);
-        let _ = tokio::time::timeout(timeout, task_a).await;
-        let _ = tokio::time::timeout(timeout, task_b).await;
-        let _ = tokio::time::timeout(timeout, task_c).await;
-        let _ = tokio::time::timeout(timeout, stdout_writer).await;
+        let flush = std::time::Duration::from_secs(2);
+        let _ = tokio::time::timeout(flush, task_a).await;
+        let _ = tokio::time::timeout(flush, task_b).await;
+        let _ = tokio::time::timeout(flush, task_c).await;
+        let _ = tokio::time::timeout(flush, stdout_writer).await;
 
         if !status.success() {
             std::process::exit(status.code().unwrap_or(1));
@@ -109,10 +115,13 @@ impl StdioProxy {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_inbound(
     mut child_stdin: tokio::process::ChildStdin,
     pending: PendingMap,
-    engine: Option<Arc<PolicyEngine>>,
+    policy: Option<Arc<PolicyEngine>>,
+    rate_limiter: Arc<RateLimiter>,
+    circuit_breaker: Arc<CircuitBreaker>,
     storage: StorageWriter,
     server_name: String,
     stdout_tx: UnboundedSender<String>,
@@ -142,40 +151,30 @@ async fn proxy_inbound(
             raw: line.clone(),
         });
 
-        // Only evaluate tools/call requests through the policy engine.
         if let JsonRpcMessage::Request(ref req) = msg {
             if req.method == mcp::TOOLS_CALL {
                 let (tool_name, arguments) = extract_tool_call_params(req);
 
-                if let Some(ref engine) = engine {
+                // 1 — Policy engine (deny / redact / rate_limit rules)
+                if let Some(ref engine) = policy {
                     let decision = engine.evaluate(&tool_name, arguments.as_ref());
                     match decision {
                         PolicyDecision::Deny { rule_id, message } => {
-                            let err_resp =
-                                build_error_response(&req.id, -32603, &message);
-                            let serialized = serde_json::to_string(&err_resp)?;
-                            stdout_tx.send(serialized)?;
-                            storage.record(denied_record(
-                                &tool_name,
-                                arguments,
-                                &server_name,
-                                &rule_id,
+                            let resp = build_error(&req.id, -32603, &message, None);
+                            stdout_tx.send(serde_json::to_string(&resp)?)?;
+                            storage.record(make_record(
+                                &tool_name, arguments, &server_name,
+                                InvocationStatus::Denied, Some(&rule_id),
                             ));
                             continue;
                         }
                         PolicyDecision::RateLimited { rule_id } => {
-                            let msg_str = format!(
-                                "Rate limit exceeded for rule '{rule_id}'"
-                            );
-                            let err_resp =
-                                build_error_response(&req.id, -32029, &msg_str);
-                            let serialized = serde_json::to_string(&err_resp)?;
-                            stdout_tx.send(serialized)?;
-                            storage.record(rate_limited_record(
-                                &tool_name,
-                                arguments,
-                                &server_name,
-                                &rule_id,
+                            let msg = format!("Rate limit exceeded (rule '{rule_id}')");
+                            let resp = build_error(&req.id, -32029, &msg, None);
+                            stdout_tx.send(serde_json::to_string(&resp)?)?;
+                            storage.record(make_record(
+                                &tool_name, arguments, &server_name,
+                                InvocationStatus::RateLimited, Some(&rule_id),
                             ));
                             continue;
                         }
@@ -190,17 +189,67 @@ async fn proxy_inbound(
                                     started_at: Instant::now(),
                                 },
                             );
-                            tracing::info!(
-                                rule_id = %rule_id,
-                                tool = %tool_name,
-                                "Arguments redacted"
-                            );
+                            tracing::info!(rule_id = %rule_id, tool = %tool_name, "Arguments redacted");
                             child_stdin.write_all(serialized.as_bytes()).await?;
                             child_stdin.write_all(b"\n").await?;
                             child_stdin.flush().await?;
                             continue;
                         }
                         PolicyDecision::Allow => {}
+                    }
+                }
+
+                // 2 — Global / per-tool rate limiter
+                match rate_limiter.check(&tool_name) {
+                    RateLimitDecision::GlobalLimitExceeded { retry_after_secs } => {
+                        let msg = format!(
+                            "Global rate limit exceeded. Retry after {retry_after_secs}s."
+                        );
+                        let data = json!({ "retry_after_secs": retry_after_secs });
+                        let resp = build_error(&req.id, -32029, &msg, Some(data));
+                        stdout_tx.send(serde_json::to_string(&resp)?)?;
+                        storage.record(make_record(
+                            &tool_name, arguments, &server_name,
+                            InvocationStatus::RateLimited, Some("global"),
+                        ));
+                        continue;
+                    }
+                    RateLimitDecision::ToolLimitExceeded { tool, retry_after_secs } => {
+                        let msg = format!(
+                            "Per-tool rate limit exceeded for '{tool}'. Retry after {retry_after_secs}s."
+                        );
+                        let data = json!({ "retry_after_secs": retry_after_secs, "tool": tool });
+                        let resp = build_error(&req.id, -32029, &msg, Some(data));
+                        stdout_tx.send(serde_json::to_string(&resp)?)?;
+                        storage.record(make_record(
+                            &tool_name, arguments, &server_name,
+                            InvocationStatus::RateLimited, Some("per-tool"),
+                        ));
+                        continue;
+                    }
+                    RateLimitDecision::Allow => {}
+                }
+
+                // 3 — Circuit breaker
+                match circuit_breaker.check(&tool_name) {
+                    CircuitDecision::Open { retry_after_secs } => {
+                        let msg = format!(
+                            "Circuit breaker open for '{tool_name}'. Retry after {retry_after_secs}s."
+                        );
+                        let data =
+                            json!({ "retry_after_secs": retry_after_secs, "state": "open" });
+                        let resp = build_error(&req.id, -32030, &msg, Some(data));
+                        stdout_tx.send(serde_json::to_string(&resp)?)?;
+                        storage.record(make_record(
+                            &tool_name, arguments, &server_name,
+                            InvocationStatus::Error, Some("circuit-breaker"),
+                        ));
+                        continue;
+                    }
+                    CircuitDecision::Allow { is_probe } => {
+                        if is_probe {
+                            tracing::info!(tool = %tool_name, "Circuit probe allowed");
+                        }
                     }
                 }
 
@@ -226,6 +275,7 @@ async fn proxy_inbound(
 async fn proxy_response(
     child_stdout: tokio::process::ChildStdout,
     pending: PendingMap,
+    circuit_breaker: Arc<CircuitBreaker>,
     storage: StorageWriter,
     server_name: String,
     stdout_tx: UnboundedSender<String>,
@@ -245,7 +295,7 @@ async fn proxy_response(
                     message: msg.clone(),
                     raw: line.clone(),
                 });
-                flush_pending_call(&msg, &pending, &storage, &server_name);
+                flush_pending_call(&msg, &pending, &circuit_breaker, &storage, &server_name);
                 stdout_tx.send(line)?;
             }
             Err(e) => {
@@ -272,6 +322,7 @@ async fn pipe_stderr(child_stderr: tokio::process::ChildStderr) -> Result<()> {
 fn flush_pending_call(
     msg: &JsonRpcMessage,
     pending: &PendingMap,
+    circuit_breaker: &CircuitBreaker,
     storage: &StorageWriter,
     server_name: &str,
 ) {
@@ -285,6 +336,13 @@ fn flush_pending_call(
     };
 
     let latency_ms = call.started_at.elapsed().as_millis() as i64;
+
+    if resp.error.is_some() {
+        circuit_breaker.on_error(&call.tool_name);
+    } else {
+        circuit_breaker.on_success(&call.tool_name);
+    }
+
     let status = if resp.error.is_some() {
         InvocationStatus::Error
     } else {
@@ -306,7 +364,12 @@ fn flush_pending_call(
     });
 }
 
-fn build_error_response(id: &Option<Value>, code: i64, message: &str) -> JsonRpcResponse {
+fn build_error(
+    id: &Option<Value>,
+    code: i64,
+    message: &str,
+    data: Option<Value>,
+) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         id: id.clone().unwrap_or(Value::Null),
@@ -314,13 +377,16 @@ fn build_error_response(id: &Option<Value>, code: i64, message: &str) -> JsonRpc
         error: Some(JsonRpcError {
             code,
             message: message.to_string(),
-            data: None,
+            data,
         }),
     }
 }
 
 fn rebuild_tools_call(original: &JsonRpcRequest, new_arguments: Value) -> JsonRpcRequest {
-    let mut params = original.params.clone().unwrap_or(Value::Object(Default::default()));
+    let mut params = original
+        .params
+        .clone()
+        .unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut map) = params {
         map.insert("arguments".to_string(), new_arguments);
     }
@@ -332,11 +398,12 @@ fn rebuild_tools_call(original: &JsonRpcRequest, new_arguments: Value) -> JsonRp
     }
 }
 
-fn denied_record(
+fn make_record(
     tool_name: &str,
     arguments: Option<Value>,
     server_name: &str,
-    rule_id: &str,
+    status: InvocationStatus,
+    policy_hit: Option<&str>,
 ) -> InvocationRecord {
     InvocationRecord {
         id: Uuid::new_v4().to_string(),
@@ -348,29 +415,8 @@ fn denied_record(
         arguments,
         result: None,
         latency_ms: None,
-        status: InvocationStatus::Denied,
-        policy_hit: Some(rule_id.to_string()),
-    }
-}
-
-fn rate_limited_record(
-    tool_name: &str,
-    arguments: Option<Value>,
-    server_name: &str,
-    rule_id: &str,
-) -> InvocationRecord {
-    InvocationRecord {
-        id: Uuid::new_v4().to_string(),
-        timestamp: Utc::now(),
-        agent_id: None,
-        session_id: None,
-        server_name: server_name.to_string(),
-        tool_name: tool_name.to_string(),
-        arguments,
-        result: None,
-        latency_ms: None,
-        status: InvocationStatus::RateLimited,
-        policy_hit: Some(rule_id.to_string()),
+        status,
+        policy_hit: policy_hit.map(str::to_string),
     }
 }
 

@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -5,12 +6,13 @@ use std::path::PathBuf;
 pub struct AgentGateConfig {
     pub log_level: String,
     pub log_format: LogFormat,
-    /// Path to the SQLite database. Defaults to `~/.agentgate/logs.db`.
     pub db_path: PathBuf,
-    /// Name used to identify the wrapped server in invocation records.
     pub server_name: String,
-    /// Optional path to a TOML policy file. No policy enforcement when absent.
     pub policy_path: Option<PathBuf>,
+    #[serde(default)]
+    pub rate_limits: RateLimitConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,23 +22,65 @@ pub enum LogFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    pub global_max_calls_per_minute: u64,
+    pub per_tool_max_calls_per_minute: u64,
+    pub per_agent_max_calls_per_minute: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            global_max_calls_per_minute: 500,
+            per_tool_max_calls_per_minute: 100,
+            per_agent_max_calls_per_minute: 200,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    pub error_threshold: usize,
+    pub window_seconds: u64,
+    pub cooldown_seconds: u64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            error_threshold: 5,
+            window_seconds: 30,
+            cooldown_seconds: 60,
+        }
+    }
+}
+
 impl Default for AgentGateConfig {
     fn default() -> Self {
         Self {
             log_level: "info".to_string(),
             log_format: LogFormat::Pretty,
-            db_path: default_db_path(),
+            db_path: agentgate_dir().join("logs.db"),
             server_name: "unknown".to_string(),
             policy_path: None,
+            rate_limits: RateLimitConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
         }
     }
 }
 
-fn default_db_path() -> PathBuf {
-    dirs_path().join("logs.db")
+impl AgentGateConfig {
+    /// Load from a TOML file, falling back to defaults for missing fields.
+    pub fn load_toml(path: &std::path::Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config: {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("Invalid config TOML: {}", path.display()))
+    }
 }
 
-fn dirs_path() -> PathBuf {
+pub fn agentgate_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home).join(".agentgate")
 }
