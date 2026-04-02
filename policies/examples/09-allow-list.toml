@@ -1,0 +1,24 @@
+[metadata]
+name = "allow-list"
+version = "1.0"
+
+[[rules]]
+id = "allow-read-file"
+tool = "read_file"
+action = "allow"
+
+[[rules]]
+id = "allow-list-directory"
+tool = "list_directory"
+action = "allow"
+
+[[rules]]
+id = "allow-search-files"
+tool = "search_files"
+action = "allow"
+
+[[rules]]
+id = "deny-everything-else"
+tool = "*"
+action = "deny"
+message = "Tool not on the allow-list"

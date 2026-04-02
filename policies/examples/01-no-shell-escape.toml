@@ -1,0 +1,10 @@
+[metadata]
+name = "no-shell-escape"
+version = "1.0"
+
+[[rules]]
+id = "no-shell-escape"
+tool = "bash"
+condition = "arguments.command matches '(;\\s*bash|&&\\s*sh|\\|\\s*bash|`[^`]+`)'"
+action = "deny"
+message = "Shell escape sequences are not permitted"

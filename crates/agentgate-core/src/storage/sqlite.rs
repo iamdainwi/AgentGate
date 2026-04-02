@@ -71,6 +71,7 @@ pub struct InvocationRecord {
 }
 
 /// Non-blocking writer that queues records to a background SQLite writer task.
+#[derive(Clone)]
 pub struct StorageWriter {
     tx: UnboundedSender<InvocationRecord>,
 }

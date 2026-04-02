@@ -1,0 +1,24 @@
+[metadata]
+name = "api-throttle"
+version = "1.0"
+
+[[rules]]
+id = "throttle-http-request"
+tool = "http_request"
+action = "rate_limit"
+max_calls = 60
+window_seconds = 60
+
+[[rules]]
+id = "throttle-search"
+tool = "search"
+action = "rate_limit"
+max_calls = 20
+window_seconds = 60
+
+[[rules]]
+id = "throttle-bash"
+tool = "bash"
+action = "rate_limit"
+max_calls = 30
+window_seconds = 60

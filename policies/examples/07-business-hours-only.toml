@@ -1,0 +1,24 @@
+[metadata]
+name = "business-hours-only"
+version = "1.0"
+
+[[rules]]
+id = "deny-writes-after-hours"
+tool = "write_file"
+condition = "time.hour < 9 or time.hour > 17"
+action = "deny"
+message = "File writes are restricted to business hours (09:00–17:00 UTC)"
+
+[[rules]]
+id = "deny-delete-after-hours"
+tool = "delete_file"
+condition = "time.hour < 9 or time.hour > 17"
+action = "deny"
+message = "File deletion is restricted to business hours (09:00–17:00 UTC)"
+
+[[rules]]
+id = "deny-bash-after-hours"
+tool = "bash"
+condition = "time.hour < 9 or time.hour > 17"
+action = "deny"
+message = "Shell execution is restricted to business hours (09:00–17:00 UTC)"

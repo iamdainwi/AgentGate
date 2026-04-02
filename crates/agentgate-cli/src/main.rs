@@ -20,6 +20,10 @@ struct Cli {
 enum Commands {
     /// Wrap an MCP server process, proxying and logging all tool calls
     Wrap {
+        /// Path to a TOML policy file to enforce
+        #[arg(long)]
+        policy: Option<std::path::PathBuf>,
+
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -52,19 +56,19 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Wrap { command } => {
+        Commands::Wrap { policy, command } => {
             if command.is_empty() {
                 eprintln!("error: no command specified. Usage: agentgate wrap -- <cmd> [args...]");
                 std::process::exit(1);
             }
 
             let (cmd, args) = command.split_first().expect("non-empty checked above");
-            // Derive server_name from the binary name for legible records.
             config.server_name = std::path::Path::new(cmd)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(cmd)
                 .to_string();
+            config.policy_path = policy;
 
             let proxy = StdioProxy::new(config);
             proxy.run(cmd, args).await?;

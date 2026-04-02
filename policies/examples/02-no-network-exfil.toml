@@ -1,0 +1,17 @@
+[metadata]
+name = "no-network-exfil"
+version = "1.0"
+
+[[rules]]
+id = "block-curl-external"
+tool = "bash"
+condition = "arguments.command matches '(curl|wget)\\s+.*https?://(?!localhost|127\\.0\\.0\\.1|10\\.|192\\.168\\.)'"
+action = "deny"
+message = "Outbound HTTP requests to external hosts are not permitted from bash"
+
+[[rules]]
+id = "block-netcat"
+tool = "bash"
+condition = "arguments.command matches '\\bnc\\b|\\bnetcat\\b'"
+action = "deny"
+message = "netcat usage is not permitted"

@@ -9,6 +9,8 @@ pub struct AgentGateConfig {
     pub db_path: PathBuf,
     /// Name used to identify the wrapped server in invocation records.
     pub server_name: String,
+    /// Optional path to a TOML policy file. No policy enforcement when absent.
+    pub policy_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +27,7 @@ impl Default for AgentGateConfig {
             log_format: LogFormat::Pretty,
             db_path: default_db_path(),
             server_name: "unknown".to_string(),
+            policy_path: None,
         }
     }
 }

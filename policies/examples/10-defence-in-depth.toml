@@ -1,0 +1,46 @@
+[metadata]
+name = "defence-in-depth"
+version = "1.0"
+
+[[rules]]
+id = "no-rm-rf"
+tool = "bash"
+condition = "arguments.command matches '(rm\\s+-rf|rm\\s+-fr)'"
+action = "deny"
+message = "Recursive force-delete is not permitted"
+
+[[rules]]
+id = "no-privilege-escalation"
+tool = "bash"
+condition = "arguments.command matches '\\b(sudo|su|pkexec|doas)\\b'"
+action = "deny"
+message = "Privilege escalation commands are not permitted"
+
+[[rules]]
+id = "no-cron-modification"
+tool = "bash"
+condition = "arguments.command matches '(crontab|/etc/cron)'"
+action = "deny"
+message = "Cron modification is not permitted"
+
+[[rules]]
+id = "redact-secrets"
+tool = "*"
+condition = "arguments contains_pattern '(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]+|AKIA[0-9A-Z]{16})'"
+action = "redact"
+pattern = "(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]+|AKIA[0-9A-Z]{16})"
+replacement = "[REDACTED]"
+
+[[rules]]
+id = "throttle-bash"
+tool = "bash"
+action = "rate_limit"
+max_calls = 50
+window_seconds = 60
+
+[[rules]]
+id = "deny-writes-after-hours"
+tool = "write_file"
+condition = "time.hour < 8 or time.hour > 20"
+action = "deny"
+message = "File writes restricted outside 08:00–20:00 UTC"

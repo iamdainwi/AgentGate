@@ -1,0 +1,21 @@
+[metadata]
+name = "production-readonly"
+version = "1.0"
+
+[[rules]]
+id = "deny-write-file"
+tool = "write_file"
+action = "deny"
+message = "File writes are disabled in production read-only mode"
+
+[[rules]]
+id = "deny-create-directory"
+tool = "create_directory"
+action = "deny"
+message = "Directory creation is disabled in production read-only mode"
+
+[[rules]]
+id = "deny-delete-file"
+tool = "delete_file"
+action = "deny"
+message = "File deletion is disabled in production read-only mode"

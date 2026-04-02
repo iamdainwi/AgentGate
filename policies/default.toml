@@ -1,43 +1,36 @@
-# AgentGate Default Policy
-# Phase 2 will implement full policy evaluation
-
-#[metadata]
-#name = "default"
-#version = "1.0"
-
-# ~/.agentgate/policies/default.toml
-
 [metadata]
-name = "production-safety"
+name = "default"
 version = "1.0"
 
-# §1 — Deny destructive shell commands
 [[rules]]
 id = "no-rm-rf"
 tool = "bash"
-condition = "arguments.command matches '(rm\\s+-rf|DROP\\s+TABLE|DELETE\\s+FROM)'"
+condition = "arguments.command matches '(rm\\s+-rf|rm\\s+-fr)'"
 action = "deny"
-message = "Destructive command blocked by policy"
+message = "Recursive force-delete is not permitted"
 
-# §2 — Read-only filesystem after hours
+[[rules]]
+id = "no-destructive-sql"
+tool = "bash"
+condition = "arguments.command matches '(DROP\\s+TABLE|DROP\\s+DATABASE|TRUNCATE\\s+TABLE)'"
+action = "deny"
+message = "Destructive SQL statements are not permitted"
+
 [[rules]]
 id = "readonly-after-hours"
 tool = "write_file"
 condition = "time.hour < 9 or time.hour > 18"
 action = "deny"
-message = "File writes disabled outside business hours"
+message = "File writes are disabled outside business hours (09:00–18:00 UTC)"
 
-# §3 — Redact secrets from arguments
 [[rules]]
 id = "redact-secrets"
 tool = "*"
-condition = "arguments contains_pattern '(sk-[a-zA-Z0-9]+|ghp_[a-zA-Z0-9]+)'"
+condition = "arguments contains_pattern '(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]+|xoxb-[a-zA-Z0-9-]+)'"
 action = "redact"
-fields = ["arguments"]
-pattern = "(sk-[a-zA-Z0-9]+|ghp_[a-zA-Z0-9]+)"
+pattern = "(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]+|xoxb-[a-zA-Z0-9-]+)"
 replacement = "[REDACTED]"
 
-# §4 — Rate limit API calls
 [[rules]]
 id = "api-rate-limit"
 tool = "http_request"
