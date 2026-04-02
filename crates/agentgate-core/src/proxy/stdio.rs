@@ -243,7 +243,14 @@ async fn proxy_response(
                     message: msg.clone(),
                     raw: line.clone(),
                 });
-                flush_pending(&msg, &pending, policy.as_ref(), &circuit_breaker, &storage, &server_name);
+                flush_pending(
+                    &msg,
+                    &pending,
+                    policy.as_ref(),
+                    &circuit_breaker,
+                    &storage,
+                    &server_name,
+                );
             }
             Err(e) => tracing::warn!("Response parse error: {e}"),
         }
@@ -307,11 +314,9 @@ fn flush_pending(
     };
 
     // Scan result through policy redact rules before storing — catches secrets in tool output.
-    let result_to_store = resp.result.as_ref().map(|res| {
-        match policy {
-            Some(engine) => engine.redact_output(res),
-            None => res.clone(),
-        }
+    let result_to_store = resp.result.as_ref().map(|res| match policy {
+        Some(engine) => engine.redact_output(res),
+        None => res.clone(),
     });
 
     storage.record(InvocationRecord {
@@ -369,9 +374,9 @@ fn extract_params(req: &JsonRpcRequest) -> (String, Option<Value>) {
 async fn sigterm_signal() {
     #[cfg(unix)]
     {
-        if let Ok(mut sig) = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        ) {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             sig.recv().await;
             return;
         }

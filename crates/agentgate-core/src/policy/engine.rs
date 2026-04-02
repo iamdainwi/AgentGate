@@ -1,12 +1,13 @@
 use super::condition::{EvalCtx, Expr};
 use super::rules::{PolicyFile, PolicyRule, RuleAction};
+use crate::ratelimit::TokenBucket;
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum PolicyDecision {
@@ -20,37 +21,6 @@ struct CompiledRule {
     rule: PolicyRule,
     condition: Option<Expr>,
     redact_re: Option<Regex>,
-}
-
-struct TokenBucket {
-    tokens: f64,
-    max_tokens: f64,
-    refill_rate: f64,
-    last_refill: Instant,
-}
-
-impl TokenBucket {
-    fn new(max_calls: u64, window_seconds: u64) -> Self {
-        let max = max_calls as f64;
-        Self {
-            tokens: max,
-            max_tokens: max,
-            refill_rate: max / window_seconds.max(1) as f64,
-            last_refill: Instant::now(),
-        }
-    }
-
-    fn try_consume(&mut self) -> bool {
-        let elapsed = self.last_refill.elapsed().as_secs_f64();
-        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.max_tokens);
-        self.last_refill = Instant::now();
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
 }
 
 pub struct PolicyEngine {
@@ -69,14 +39,16 @@ impl PolicyEngine {
 
     pub fn reload(&self, path: &Path) -> Result<()> {
         let rules = compile_file(path)?;
-        *self.compiled.write().unwrap() = rules;
+        // unwrap_or_else recovers from lock poisoning — the poisoned lock still holds
+        // valid data and we overwrite it immediately, so continuing is safe.
+        *self.compiled.write().unwrap_or_else(|e| e.into_inner()) = rules;
         Ok(())
     }
 
     pub fn evaluate(&self, tool_name: &str, arguments: Option<&Value>) -> PolicyDecision {
         let now = chrono::Utc::now();
         let ctx = EvalCtx { arguments, now };
-        let rules = self.compiled.read().unwrap();
+        let rules = self.compiled.read().unwrap_or_else(|e| e.into_inner());
 
         for cr in rules.iter() {
             if !tool_matches(&cr.rule.tool, tool_name) {
@@ -120,7 +92,7 @@ impl PolicyEngine {
                         .unwrap()
                         .entry(cr.rule.id.clone())
                         .or_insert_with(|| {
-                            TokenBucket::new(
+                            TokenBucket::new_with_window(
                                 cr.rule.max_calls.unwrap_or(100),
                                 cr.rule.window_seconds.unwrap_or(60),
                             )
@@ -142,7 +114,7 @@ impl PolicyEngine {
     /// Apply all `redact` rules' patterns to a result value.
     /// Call this on tool-call results before storing to prevent secrets from leaking into logs.
     pub fn redact_output(&self, value: &Value) -> Value {
-        let rules = self.compiled.read().unwrap();
+        let rules = self.compiled.read().unwrap_or_else(|e| e.into_inner());
         let mut out = value.clone();
         for cr in rules.iter() {
             if cr.rule.action == RuleAction::Redact {

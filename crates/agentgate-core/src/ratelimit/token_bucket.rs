@@ -9,11 +9,18 @@ pub struct TokenBucket {
 
 impl TokenBucket {
     pub fn new(max_per_minute: u64) -> Self {
-        let max = max_per_minute as f64;
+        Self::new_with_window(max_per_minute, 60)
+    }
+
+    /// Create a bucket with an explicit refill window. Used by the policy engine's
+    /// per-rule rate limiters where the window is specified in the policy file.
+    pub fn new_with_window(max_calls: u64, window_seconds: u64) -> Self {
+        let max = max_calls as f64;
+        let window = window_seconds.max(1) as f64;
         Self {
             tokens: max,
             max_tokens: max,
-            refill_rate: max / 60.0,
+            refill_rate: max / window,
             last_refill: Instant::now(),
         }
     }

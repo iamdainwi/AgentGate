@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender};
 
 /// Payloads larger than this are truncated before storage to prevent database bloat.
 const MAX_PAYLOAD_BYTES: usize = 2048;
@@ -73,22 +73,24 @@ pub struct InvocationRecord {
     pub policy_hit: Option<String>,
 }
 
+/// Capacity of the storage write channel. Records are dropped (with a warning) when full
+/// rather than allowing unbounded memory growth under I/O backpressure.
+const STORAGE_CHANNEL_CAPACITY: usize = 10_000;
+
 /// Non-blocking writer that queues records to a background SQLite writer task.
 #[derive(Clone)]
 pub struct StorageWriter {
-    tx: UnboundedSender<InvocationRecord>,
+    tx: Sender<InvocationRecord>,
 }
 
 impl StorageWriter {
-    /// Spawns a background tokio task that drains the channel and writes to SQLite.
+    /// Spawns a background task that drains the channel and writes to SQLite.
     pub fn spawn(db_path: PathBuf) -> Result<Self> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<InvocationRecord>();
+        let (tx, mut rx) = mpsc::channel::<InvocationRecord>(STORAGE_CHANNEL_CAPACITY);
 
         tokio::task::spawn_blocking(move || {
             let conn = open_and_migrate(&db_path)?;
 
-            // Drain the channel synchronously — runs on the blocking thread pool.
-            // Using a runtime handle to block on the async receiver.
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
                 while let Some(record) = rx.recv().await {
@@ -104,10 +106,17 @@ impl StorageWriter {
         Ok(Self { tx })
     }
 
-    /// Enqueue a record for async persistence. Never blocks the caller.
+    /// Enqueue a record for persistence. Drops the record (with a warning) if the
+    /// channel is full — never blocks the proxy hot path.
     pub fn record(&self, record: InvocationRecord) {
-        if self.tx.send(record).is_err() {
-            tracing::warn!("Storage writer channel closed; record dropped");
+        match self.tx.try_send(record) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("Storage channel full; invocation record dropped");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("Storage writer channel closed; record dropped");
+            }
         }
     }
 }
@@ -216,7 +225,10 @@ fn truncate_payload(s: String) -> String {
 }
 
 fn insert_record(conn: &Connection, r: &InvocationRecord) -> Result<()> {
-    let arguments = r.arguments.as_ref().map(|v| truncate_payload(v.to_string()));
+    let arguments = r
+        .arguments
+        .as_ref()
+        .map(|v| truncate_payload(v.to_string()));
     let result = r.result.as_ref().map(|v| truncate_payload(v.to_string()));
 
     conn.execute(
