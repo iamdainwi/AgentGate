@@ -53,8 +53,25 @@ pub enum JsonRpcMessage {
 
 impl JsonRpcMessage {
     /// Parse a line of text into a `JsonRpcMessage`.
+    ///
+    /// Uses a fast-path heuristic to avoid the overhead of `#[serde(untagged)]`,
+    /// which buffers the entire JSON into a `serde_json::Value` and then tries
+    /// each variant in sequence — effectively parsing every message twice.
+    ///
+    /// JSON-RPC 2.0 guarantees: Requests always carry a `method` field; Responses
+    /// never do. A byte-scan for `"method"` lets us dispatch to the correct
+    /// `from_str` call directly, parsing each message exactly once.
+    ///
+    /// Edge-case: if a response embeds a nested `"method"` string inside its
+    /// `result` payload, the heuristic fires but `from_str::<JsonRpcRequest>` will
+    /// fail (no top-level `method` key), and we fall through to the response path.
     pub fn parse(line: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(line)
+        if line.contains("\"method\"") {
+            if let Ok(req) = serde_json::from_str::<JsonRpcRequest>(line) {
+                return Ok(JsonRpcMessage::Request(req));
+            }
+        }
+        serde_json::from_str::<JsonRpcResponse>(line).map(JsonRpcMessage::Response)
     }
 
     /// Return the method name if this is a request.
