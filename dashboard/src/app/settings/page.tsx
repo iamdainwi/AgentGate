@@ -2,10 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { getPolicies, putPolicies } from '@/lib/api'
+import { AuthError } from '@/lib/auth'
+import { useAuth } from '@/components/TokenGate'
 
 type Banner = { type: 'success' | 'error'; message: string } | null
 
 export default function SettingsPage() {
+  const { onUnauthorized } = useAuth()
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -18,7 +21,7 @@ export default function SettingsPage() {
         if (text === '') setNotFound(true)
         setContent(text)
       })
-      .catch(() => setNotFound(true))
+      .catch((e) => { if (e instanceof AuthError) onUnauthorized(); else setNotFound(true) })
       .finally(() => setLoading(false))
   }, [])
 
@@ -33,7 +36,8 @@ export default function SettingsPage() {
       } else {
         setBanner({ type: 'error', message: 'Server rejected the policy update.' })
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof AuthError) { onUnauthorized(); return }
       setBanner({ type: 'error', message: 'Failed to reach the backend.' })
     } finally {
       setSaving(false)

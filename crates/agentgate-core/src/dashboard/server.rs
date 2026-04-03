@@ -41,14 +41,21 @@ async fn auth_layer(
         return next.run(req).await;
     }
 
+    // The WebSocket endpoint cannot receive custom headers in a browser
+    // (`new WebSocket(url)` has no headers option). Authentication for that
+    // route is handled inside `ws_live_handler` via the `?token=` query param.
+    if path == "/api/ws/live" {
+        return next.run(req).await;
+    }
+
     let expected = format!("Bearer {}", state.auth_token);
     let provided = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    // Constant-time comparison via `==` is fine here: the token is a random UUID
-    // and there is no oracle attack surface since we are bound to 127.0.0.1 only.
+    // String equality is fine here: the token is a CSPRNG-generated hex string
+    // and the server is bound to 127.0.0.1 only — no timing oracle exists.
     if provided != expected {
         return (
             StatusCode::UNAUTHORIZED,

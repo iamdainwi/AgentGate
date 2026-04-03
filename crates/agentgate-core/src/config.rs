@@ -27,6 +27,12 @@ pub struct AgentGateConfig {
     /// Log retention settings — prevents unbounded disk growth.
     #[serde(default)]
     pub log_retention: LogRetentionConfig,
+    /// API key protecting the dashboard REST API and WebSocket feed.
+    /// If left empty (the default), AgentGate auto-generates a secure random
+    /// 32-character key on startup and prints it to stderr.
+    /// Set this in config.toml to lock the key across restarts.
+    #[serde(default)]
+    pub dashboard_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +137,7 @@ impl Default for AgentGateConfig {
             circuit_breaker: CircuitBreakerConfig::default(),
             servers: Vec::new(),
             log_retention: LogRetentionConfig::default(),
+            dashboard_api_key: None,
         }
     }
 }

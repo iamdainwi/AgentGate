@@ -3,18 +3,21 @@
 import { useEffect, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { getToolStats } from '@/lib/api'
+import { AuthError } from '@/lib/auth'
+import { useAuth } from '@/components/TokenGate'
 import type { ToolStat } from '@/lib/types'
 
 export default function AnalyticsPage() {
+  const { onUnauthorized } = useAuth()
   const [stats, setStats] = useState<ToolStat[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     getToolStats()
       .then(setStats)
-      .catch(console.error)
+      .catch((e) => { if (e instanceof AuthError) onUnauthorized(); else console.error(e) })
       .finally(() => setLoading(false))
-  }, [])
+  }, [onUnauthorized])
 
   const top10 = [...stats]
     .sort((a, b) => b.total_calls - a.total_calls)

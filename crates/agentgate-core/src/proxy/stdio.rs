@@ -1,5 +1,5 @@
 use crate::config::AgentGateConfig;
-use crate::dashboard::{generate_and_print_token, spawn_dashboard, DashboardState};
+use crate::dashboard::{resolve_auth_token, spawn_dashboard, DashboardState};
 use crate::logging::structured::{log_event, Direction, LogEvent};
 use crate::metrics;
 use crate::policy::PolicyEngine;
@@ -82,7 +82,7 @@ impl StdioProxy {
         }
 
         let dashboard_port = self.config.dashboard_port.unwrap_or(7070);
-        let auth_token = generate_and_print_token();
+        let auth_token = resolve_auth_token(self.config.dashboard_api_key.as_deref());
         let dash_state = DashboardState {
             db_path: self.config.db_path.clone(),
             policy_path: self.config.policy_path.clone(),

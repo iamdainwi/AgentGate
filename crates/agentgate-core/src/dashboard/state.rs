@@ -14,20 +14,45 @@ pub struct DashboardState {
     pub policy_engine: Option<Arc<PolicyEngine>>,
     /// Sender half of the live invocation broadcast — handlers subscribe per WebSocket connection.
     pub live_tx: broadcast::Sender<InvocationRecord>,
-    /// Bearer token required for all authenticated routes.
-    /// Generated randomly at startup and printed to stderr so only the local user can access the
-    /// dashboard — even on a multi-user machine or cloud VM with an open firewall.
+    /// Bearer token required for all authenticated API routes and WebSocket connections.
     pub auth_token: String,
 }
 
-/// Generate a cryptographically-random dashboard token and print it to stderr.
-/// Uses UUID v4 (122 bits of randomness) — sufficient for a single-host bearer token.
-pub fn generate_and_print_token() -> String {
-    let token = uuid::Uuid::new_v4().to_string();
+/// Resolve the dashboard API key:
+/// - If `configured` is `Some(s)` and `s` is non-empty, use it as-is.
+/// - Otherwise auto-generate a 32-character hex token (128-bit, CSPRNG via UUID v4),
+///   print it to stderr, and return it.
+///
+/// Call this once at startup and store the result in `DashboardState`.
+pub fn resolve_auth_token(configured: Option<&str>) -> String {
+    if let Some(key) = configured.filter(|s| !s.trim().is_empty()) {
+        eprintln!("[agentgate] Dashboard auth: using key from config.");
+        return key.to_string();
+    }
+
+    // 16 random bytes from UUID v4 → 32 lowercase hex characters.
+    // Formatting the raw bytes avoids the version/variant field overwrite that
+    // UUID's hyphenated string form imposes, giving the full 128 bits of randomness.
+    let raw = uuid::Uuid::new_v4();
+    let token: String = raw
+        .as_bytes()
+        .iter()
+        .fold(String::with_capacity(32), |mut s, b| {
+            use std::fmt::Write;
+            write!(s, "{b:02x}").ok();
+            s
+        });
+
     eprintln!(
         "[agentgate] Dashboard token: {token}\n\
-         [agentgate] Access the dashboard at http://127.0.0.1:7070 with:\n\
-         [agentgate]   Authorization: Bearer {token}"
+         [agentgate] Open http://127.0.0.1:7070 and enter this token, or pass it as:\n\
+         [agentgate]   curl -H 'Authorization: Bearer {token}' http://127.0.0.1:7070/api/invocations"
     );
     token
+}
+
+/// Compatibility shim used where the token is always auto-generated (no config key available).
+#[inline]
+pub fn generate_and_print_token() -> String {
+    resolve_auth_token(None)
 }

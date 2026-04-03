@@ -2,23 +2,37 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { getOverviewStats, WS_BASE } from '@/lib/api'
+import { getOverviewStats, wsLiveUrl } from '@/lib/api'
+import { AuthError } from '@/lib/auth'
+import { useAuth } from '@/components/TokenGate'
 import type { OverviewStats, InvocationRecord } from '@/lib/types'
 import KpiCard from '@/components/KpiCard'
 import InvocationsTable from '@/components/InvocationsTable'
 
 export default function OverviewPage() {
+  const { onUnauthorized } = useAuth()
   const [stats, setStats] = useState<OverviewStats | null>(null)
   const [liveRecords, setLiveRecords] = useState<InvocationRecord[]>([])
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    getOverviewStats().then(setStats).catch(console.error)
-  }, [])
+    getOverviewStats()
+      .then(setStats)
+      .catch((e) => {
+        if (e instanceof AuthError) onUnauthorized()
+        else console.error(e)
+      })
+  }, [onUnauthorized])
 
   useEffect(() => {
     function connect() {
-      const ws = new WebSocket(`${WS_BASE}/api/ws/live`)
+      const url = wsLiveUrl()
+      if (!url.includes('token=')) {
+        // No token yet — don't attempt connection; TokenGate will trigger re-mount.
+        return
+      }
+
+      const ws = new WebSocket(url)
       wsRef.current = ws
 
       ws.onmessage = (e) => {
@@ -30,7 +44,12 @@ export default function OverviewPage() {
         }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
+        // 4001 = custom close code we can use to signal auth failure
+        if (ev.code === 1008 /* Policy Violation */ || ev.code === 4001) {
+          onUnauthorized()
+          return
+        }
         setTimeout(connect, 3000)
       }
     }
@@ -39,7 +58,7 @@ export default function OverviewPage() {
     return () => {
       wsRef.current?.close()
     }
-  }, [])
+  }, [onUnauthorized])
 
   return (
     <div className="space-y-6">
@@ -67,11 +86,17 @@ export default function OverviewPage() {
               <XAxis
                 dataKey="bucket"
                 tick={{ fill: '#6b7280', fontSize: 10 }}
-                tickFormatter={(v) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                tickFormatter={(v) =>
+                  new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                }
               />
               <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} />
               <Tooltip
-                contentStyle={{ background: '#111827', border: '1px solid #374151', color: '#f3f4f6' }}
+                contentStyle={{
+                  background: '#111827',
+                  border: '1px solid #374151',
+                  color: '#f3f4f6',
+                }}
                 labelFormatter={(v) => new Date(v).toLocaleTimeString()}
               />
               <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />

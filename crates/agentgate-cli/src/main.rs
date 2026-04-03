@@ -1,5 +1,5 @@
 use agentgate_core::config::{agentgate_dir, AgentGateConfig, ServerEntry, TransportKind};
-use agentgate_core::dashboard::{generate_and_print_token, spawn_dashboard, DashboardState};
+use agentgate_core::dashboard::{resolve_auth_token, spawn_dashboard, DashboardState};
 use agentgate_core::policy::PolicyEngine;
 use agentgate_core::proxy::http::HttpProxy;
 use agentgate_core::proxy::sse::SseProxy;
@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
             let (policy_engine, rate_limiter, circuit_breaker, storage) =
                 build_shared_components(&config)?;
 
-            let auth_token = generate_and_print_token();
+            let auth_token = resolve_auth_token(config.dashboard_api_key.as_deref());
             let dash_state = DashboardState {
                 db_path: config.db_path.clone(),
                 policy_path: config.policy_path.clone(),
@@ -326,6 +326,11 @@ log_format = "pretty"
 
 # Uncomment to load a policy file on startup.
 # policy_path = "~/.agentgate/policies/default.toml"
+
+# Dashboard API key. If blank or absent, a random 32-char key is generated on
+# each startup and printed to stderr. Set this to keep the key stable across
+# restarts (useful when running AgentGate as a systemd/Docker service).
+# dashboard_api_key = "your-secret-key-here"
 
 # Port for the dashboard UI and REST API (default 7070).
 # dashboard_port = 7070

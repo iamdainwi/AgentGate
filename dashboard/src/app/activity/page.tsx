@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { getInvocations } from '@/lib/api'
+import { AuthError } from '@/lib/auth'
+import { useAuth } from '@/components/TokenGate'
 import type { InvocationRecord } from '@/lib/types'
 import InvocationsTable from '@/components/InvocationsTable'
 
@@ -9,6 +11,7 @@ const LIMIT_OPTIONS = [50, 100, 200]
 const STATUS_OPTIONS = ['', 'allowed', 'denied', 'error', 'rate_limited']
 
 export default function ActivityPage() {
+  const { onUnauthorized } = useAuth()
   const [tool, setTool] = useState('')
   const [status, setStatus] = useState('')
   const [limit, setLimit] = useState(50)
@@ -20,7 +23,7 @@ export default function ActivityPage() {
     setLoading(true)
     getInvocations({ limit, offset, tool: tool || undefined, status: status || undefined })
       .then(setRecords)
-      .catch(console.error)
+      .catch((e) => { if (e instanceof AuthError) onUnauthorized(); else console.error(e) })
       .finally(() => setLoading(false))
   }, [limit, offset, tool, status])
 
