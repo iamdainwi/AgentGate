@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentgate-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "agentgate-core",
  "anyhow",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "agentgate-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",

@@ -45,6 +45,24 @@ agentgate wrap -- npx @modelcontextprotocol/server-filesystem /tmp
 
 Every `tools/call` is now logged to `~/.agentgate/logs.db`. The agent and server see no change.
 
+### Dashboard API Key
+
+The built-in dashboard (port **7070** by default) is protected by an API key. On startup, AgentGate prints the key to your terminal:
+
+```
+[agentgate] Dashboard token: a1b2c3d4e5f6...
+[agentgate] Open http://127.0.0.1:7070 and enter this token, or pass it as:
+[agentgate]   curl -H 'Authorization: Bearer a1b2c3d4...' http://127.0.0.1:7070/api/invocations
+```
+
+**Look for the `[agentgate] Dashboard token:` line in your terminal output** — copy that value and paste it into the dashboard login prompt, or pass it as a `Bearer` token in API requests.
+
+To use a fixed key instead of a random one, set it in `~/.agentgate/config.toml`:
+
+```toml
+dashboard_api_key = "your-secret-key-here"
+```
+
 ### Query logs
 
 ```bash
